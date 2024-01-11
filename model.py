@@ -248,6 +248,6 @@ class Transformer(nn.Module):
             h = layer(h, start_pos, freqs_complex)
         
         h = self.norm(h)
-        output = self.output(h).float()
+        output = self.output(h).float() # just outputs logits, did not perform softmax yet 
         return output
 
