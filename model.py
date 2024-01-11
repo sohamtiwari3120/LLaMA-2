@@ -79,6 +79,82 @@ class RMSNorm(nn.Module):
     def forward(self, x:torch.Tensor):
         # (dim) * (B, seq_len, dim) = (B, seq_len, dim)
         return self.weight * self._norm(x.float()).type_as(x)
+    
+def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
+    batch_size, seq_len_kvcache, n_kv_heads, head_dim = x.shape
+    if n_rep == 1:
+        return x
+    return x[:, :, :, None, :].expand(batch_size, seq_len_kvcache, n_kv_heads, n_rep, head_dim).reshape(batch_size, seq_len_kvcache, n_kv_heads * n_rep, head_dim)
+
+class SelfAttention(nn.Module):
+    """Self attention with Grouped Query Attention and KV Cache. Seq_len = 1, for inference
+    """    
+    def __init__(self, args: ModelArgs) -> None:
+        super().__init__()
+
+        self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
+        self.n_q_heads = args.n_heads
+
+        # Indicates how many times the key and value heads need to be repeated to match the query heads
+        self.n_rep = self.n_q_heads // self.n_kv_heads
+        # Indicates the dimension of each head
+        self.head_dim = args.dim // args.n_heads
+
+        self.wq = nn.Linear(args.dim, self.n_q_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(self.n_q_heads * self.head_dim, args.dim, bias=False)
+
+        self.cache_k = torch.zeros((args.max_batch_size, args.max_seq_len, self.n_kv_heads, self.head_dim))
+        self.cache_v = torch.zeros((args.max_batch_size, args.max_seq_len, self.n_kv_heads, self.head_dim))
+    
+    def forward(self, x: torch.Tensor, start_pos: int, freqs_complex: torch.Tensor):
+        batch_size, seq_len, _ = x.shape
+        # seq_len should ideally be 1
+
+        # (B, seq_len, dim) -> (B, seq_len, n_qh * head_dim)
+        q = self.wq(x)
+        # (B, seq_len, dim) -> (B, seq_len, n_kvh * head_dim)
+        k = self.wk(x)
+        v = self.wv(x)
+
+        # now need to apply rotary position embeddings to query and key vectors
+        # (B, seq_len, n_qh * head_dim) -> (B, seq_len, n_qh * head_dim)
+        q = apply_rotary_embeddings(q, freqs_complex, device=x.device)
+        k = apply_rotary_embeddings(k, freqs_complex, device=x.device)
+
+        # (B, seq_len, n_qh * head_dim)  -> (B, seq_len, n_qh, head_dim)
+        q = q.view(batch_size, seq_len, self.n_q_heads, self.head_dim)
+        # (B, seq_len, n_kvh * head_dim)  -> (B, seq_len, n_kvh, head_dim)
+        k = k.view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
+        v = v.view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
+
+        # Replace the entry in the KV cache for this token
+        self.cache_k[:batch_size, start_pos: start_pos+seq_len] = k
+        self.cache_v[:batch_size, start_pos: start_pos+seq_len] = v
+
+        # Shape: (B, seq_len_kv, n_kvh, head_dim)
+        keys = self.cache_k[:batch_size, 0: start_pos+seq_len]
+        values = self.cache_v[:batch_size, 0: start_pos+seq_len]
+
+        # n_kvh may not be equal to n_qh, hence we would need to repeat the keys and values self.n_rep times
+        keys = repeat_kv(keys, self.n_rep)
+        values = repeat_kv(values, self.n_rep)
+
+        # (B, seq_len, n_qh, head_dim) -> (B, n_qh, seq_len, head_dim)
+        q = q.transpose(1, 2)
+        keys = keys.transpose(1, 2)
+        values = values.transpose(1, 2)
+
+        # (B, n_qh, seq_len, head_dim) @ (B, n_qh, head_dim, seq_len_kv_cache) -> (B, n_qh, seq_len, seq_len_kv_cache)  
+        attention_scores = F.softmax(torch.matmul(q, keys.transpose(2, 3))/torch.sqrt(self.head_dim), dim=-1).type_as(q)
+        # (B, n_qh, seq_len, seq_len_kv_cache) @ (B, n_qh, seq_len, head_dim)  -> (B, n_qh, seq_len, head_dim)
+        out = torch.matmul(attention_scores, values)
+    
+        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
+        # (B, seq_len, dim) -> (B, seq_len, dim)
+        return self.wo(out)
+
 
 class TransformerBlock(nn.Module):
     def __init__(self, args: ModelArgs) -> None:
