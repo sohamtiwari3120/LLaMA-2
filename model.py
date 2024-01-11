@@ -45,7 +45,7 @@ def precompute_theta_pos_frequencies(head_dim: int, seq_len: int, device: str, t
 
     m = torch.arange(seq_len, device=device)
     # shape: (seq_len) *outer_product (head_dim/2) -> (seq_len, head_dim/2)
-    freqs = torch.outer(m, theta).float() #
+    freqs = torch.outer(m, theta_i).float() #
     # euler's formula e^(ix) = cos(x) + isin(x)
     # we can compute complex numbers in polar form c = R * exp(i * m * theta), where R = 1
     # (seq_len, head_dim/2) -> (seq_len, head_dim/2)
