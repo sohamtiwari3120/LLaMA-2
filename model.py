@@ -26,6 +26,33 @@ class ModelArgs:
 
     device: str = None
 
+def precompute_theta_pos_frequencies(head_dim: int, seq_len: int, device: str, theta: float = 1e4):
+    assert head_dim % 2 == 0, "The hidden dimension must be even (atleast in the attention head - my note)"
+    # theta_i = theta ** -2 * (i-1)/d
+    # i E [1, 2, ... d/2] => (i-1) E [0, 1, 2, ... d/2 - 1]
+    exponents = -2.0 * torch.arange(0, head_dim/2).float() / head_dim
+    theta_i = (theta ** exponents).to(device) # shape (head_dim/2)
+
+    # # my implementation - only suitable when indexing for single token position from final list, for multiple token positions will require for loop - slow
+    # theta_i = (theta ** exponents).reshape(-1, 1) # shape (head_dim/2)
+    # theta_i_duplicate = torch.concat([theta_i, theta_i], dim=-1).reshape(-1).to(device)
+    # freqs_complex = [(None, None)] * seq_len
+    # for m in range(seq_len):
+    #     cos_comp = torch.cos(m * theta_i_duplicate)
+    #     sin_comp = torch.sin(m * theta_i_duplicate)
+    #     freqs_complex[m] = (cos_comp, sin_comp)
+    # return freqs_complex
+
+    m = torch.arange(seq_len, device=device)
+    # shape: (seq_len) *outer_product (head_dim/2) -> (seq_len, head_dim/2)
+    freqs = torch.outer(m, theta).float() #
+    # euler's formula e^(ix) = cos(x) + isin(x)
+    # we can compute complex numbers in polar form c = R * exp(i * m * theta), where R = 1
+    # (seq_len, head_dim/2) -> (seq_len, head_dim/2)
+    freqs_complex = torch.polar(abs = torch.ones_like(freqs), angle=freqs)
+    return freqs_complex
+
+
 
 class Transformer(nn.Module):
     def __init__(self, args: ModelArgs) -> None:
@@ -46,7 +73,7 @@ class Transformer(nn.Module):
         self.output = nn.Linear(args.dim, self.vocab_size, bias=False)
 
         # need to precompute RoPE frequencies before hand
-        self.freqs_complex = precompute_theta_pos_frequencies(self.args.dim // self.args.n_heads, self.args.max_seq_len * 2, device=self.args.device)
+        self.freqs_complex = precompute_theta_pos_frequencies(self.args.dim // self.args.n_heads, self.args.max_seq_len * 2, device=self.args.device) # Shape: (seq_len, dim/2)
 
     def forward(self, tokens: torch.Tensor, start_pos: int):
         # input: (batch_size, seq_len)
