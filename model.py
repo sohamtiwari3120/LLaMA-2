@@ -80,6 +80,38 @@ class RMSNorm(nn.Module):
         # (dim) * (B, seq_len, dim) = (B, seq_len, dim)
         return self.weight * self._norm(x.float()).type_as(x)
 
+class TransformerBlock(nn.Module):
+    def __init__(self, args: ModelArgs) -> None:
+        super().__init__()
+        self.n_heads = args.n_heads
+        self.n_kv_heads = args.n_kv_heads
+        self.dim = args.dim
+        self.head_dim = args.dim // args.n_heads
+
+        self.attention = SelfAttention(args)
+        self.feed_forward = FeedForward(args)
+
+        # normalization before attention
+        self.attention_norm = RMSNorm(args.dim, args.norm_eps)
+        # normalization before feedforward
+        self.ffn_norm = RMSNorm(args.dim, args.norm_eps)
+
+    def forward(self, x:torch.Tensor, start_pos: int, freqs_complex: torch.Tensor):
+        # (B, seq_len, dim)
+        # 0. Input
+        # 1. Pre attention RMS norm  
+        # 2. Self Attention with RoPE
+        # 3. Add residual from step 0.
+        # 4. Pre feedforward RMS norm
+        # 5. SwiGLU
+        # 6. Feedforward
+        # 7. Add residual from step 3.
+
+        h = x + self.attention.forward(self.attention_norm(x), start_pos, freqs_complex)
+        out = h + self.feed_forward.forward(self.ffn_norm(h))
+        return out
+
+
 
 class Transformer(nn.Module):
     def __init__(self, args: ModelArgs) -> None:
@@ -94,7 +126,7 @@ class Transformer(nn.Module):
 
         self.layers = nn.ModuleList()
         for _ in range(args.n_layers):
-            self.layers.append(EncoderBlock(args))
+            self.layers.append(TransformerBlock(args))
         
         self.norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.output = nn.Linear(args.dim, self.vocab_size, bias=False)
