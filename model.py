@@ -170,9 +170,9 @@ class FeedForward(nn.Module):
         self.w3 = nn.Linear(args.dim, hidden_dim, bias=False)
 
     def forward(self, x: torch.Tensor):
-        swish = F.silu(self.w1(x))
+        swish = F.silu(self.w1(x)) # silu(x) = x * sigmoid(x); swish(x) = x*sigmoid(beta*x)
         x_V = self.w3(x)
-        x = swish * x_V
+        x = swish * x_V # element wise multiplication
         x = self.w2(x)
         return x
 
