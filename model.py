@@ -146,9 +146,9 @@ class SelfAttention(nn.Module):
         keys = keys.transpose(1, 2)
         values = values.transpose(1, 2)
 
-        # (B, n_qh, seq_len, head_dim) @ (B, n_qh, head_dim, seq_len_kv_cache) -> (B, n_qh, seq_len, seq_len_kv_cache)  
+        # (B, n_qh, seq_len, head_dim) @ (B, n_qh, head_dim, seq_len) -> (B, n_qh, seq_len, seq_len)  
         attention_scores = F.softmax(torch.matmul(q, keys.transpose(2, 3))/torch.sqrt(self.head_dim), dim=-1).type_as(q)
-        # (B, n_qh, seq_len, seq_len_kv_cache) @ (B, n_qh, seq_len, head_dim)  -> (B, n_qh, seq_len, head_dim)
+        # (B, n_qh, seq_len, seq_len) @ (B, n_qh, seq_len, head_dim)  -> (B, n_qh, seq_len, head_dim)
         out = torch.matmul(attention_scores, values)
     
         out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
